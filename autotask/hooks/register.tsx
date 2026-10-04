@@ -44,7 +44,7 @@ const MAX_DETAIL_CHARS = 600
 // A second event on the same button this soon after the first is the same click.
 const ECHO_MS = 500
 // The buttons `activate` acts on, by the first word of their key.
-const EVERYDAY = ['open', 'back', 'toggle', 'expand', 'trash', 'scope', 'edit', 'cancel', 'save', 'menu', 'deleted', 'done', 'restore', 'remove', 'empty', 'purge', 'purgeno', 'usage', 'closeusage', 'settings']
+const EVERYDAY = ['open', 'back', 'toggle', 'expand', 'trash', 'scope', 'edit', 'cancel', 'save', 'menu', 'deleted', 'done', 'restore', 'remove', 'empty', 'purge', 'purgeno', 'usage', 'closeusage', 'settings', 'autodetect', 'alwayssend', 'sendno']
 
 const lists = atom({ plugin: 'autotask', key: 'lists' } as const, [])
 const openId = atom({ plugin: 'autotask', key: 'openId' } as const, '')
@@ -59,6 +59,9 @@ const usageOf = atom({ plugin: 'autotask', key: 'usageOf' } as const, '')
 const totals = atom({ plugin: 'autotask', key: 'totals' } as const, NO_USAGE)
 const labels = atom({ plugin: 'autotask', key: 'labels' } as const, {})
 const isSettings = atom({ plugin: 'autotask', key: 'isSettings' } as const, false)
+const autoDetect = atom({ plugin: 'autotask', key: 'autoDetect' } as const, true)
+const alwaysSend = atom({ plugin: 'autotask', key: 'alwaysSend' } as const, false)
+const confirmingSend = atom({ plugin: 'autotask', key: 'confirmingSend' } as const, false)
 const offerOpen = atom({ plugin: 'autotask', key: 'offerOpen' } as const, false)
 const unpicked = atom({ plugin: 'autotask', key: 'unpicked' } as const, [])
 const lastAnswer = atom({ plugin: 'autotask', key: 'lastAnswer' } as const, '')
@@ -125,6 +128,8 @@ const SEVERITY_LABEL: Record<Severity, string> = {
 const TASK_LABELS =
   'A task is named by its label: the letter of its list (A for L1, B for L2, AA for L27) and its number in that list, so B3 is task 3 of list L2. '
 const MAX_NOTE_CHARS = 300
+// The open tasks of a list a tool's answer names after a tick or a delete.
+const MAX_OPEN_TOLD = 12
 // What both tools say of their `note`.
 const NOTE_PARAM = {
   type: 'string',
@@ -156,6 +161,10 @@ const NO_PRIORITY = 'none'
 // What the "Move to" picker shows until a list is picked.
 const NO_LIST = 'no-list'
 const LABELS_KEY = 'labels'
+const AUTO_DETECT_KEY = 'autoDetect'
+const ALWAYS_SEND_KEY = 'alwaysSend'
+// The open tasks of one list sent with every prompt when that is turned on.
+const MAX_STANDING_TASKS = 30
 const MAX_LABEL_CHARS = 20
 // The width, in cells, of the column of priority names on the settings page.
 const LABEL_COLUMN = 9
@@ -411,6 +420,48 @@ async function setLabel($: Engine, severity: Severity, value: string) {
   await $.store.set(LABELS_KEY, await read($, labels))
 }
 
+// The open tasks of a project's lists, titles only: what "send my lists with
+// every prompt" adds to each prompt. "" with nothing open.
+function describeStanding(all: TaskList[]): string {
+  const blocks = all.flatMap(list => {
+    const open = live(list).filter(task => !task.isDone)
+    if (open.length === 0) return []
+    const more = open.length > MAX_STANDING_TASKS ? `\n  and ${open.length - MAX_STANDING_TASKS} more` : ''
+
+    return [
+      `L${list.number} "${list.name}":\n` +
+        open
+          .slice(0, MAX_STANDING_TASKS)
+          .map(task => `  ${taskLabel(list, task)} ${task.title}${task.severity ? ` (${task.severity})` : ''}`)
+          .join('\n') +
+        more,
+    ]
+  })
+  if (blocks.length === 0) return ''
+
+  return (
+    "The open tasks in the user's AutoTask pane for this project, sent with every prompt because the user turned that on. " +
+    'They are background, not a request: work on one only when the prompt asks for it. ' +
+    'Tick a task you finished and verified with mcp__autotask__set_task_done.\n\n' +
+    blocks.join('\n\n')
+  )
+}
+
+// Sets whether the project's open tasks ride every prompt; the store holds
+// the choice across sessions. Turning it on is asked about first, in Settings.
+async function setAlwaysSend($: Engine, isOn: boolean) {
+  await update($, confirmingSend, () => false)
+  await update($, alwaysSend, () => isOn)
+  await $.store.set(ALWAYS_SEND_KEY, isOn)
+}
+
+// Turns reading answers for tasks unasked on or off, for every project; the
+// store holds the choice across sessions.
+async function toggleAutoDetect($: Engine) {
+  await update($, autoDetect, held => !held)
+  await $.store.set(AUTO_DETECT_KEY, await read($, autoDetect))
+}
+
 // Opens the usage window on a list.
 async function showUsage($: Engine, listId: string) {
   await update($, usageOf, () => listId)
@@ -610,6 +661,26 @@ function describeTask(list: TaskList, task: Task): string {
     .join('\n')
 }
 
+// What a tool's answer says of the rest of a list once one of its tasks was
+// ticked or deleted: the titles still open, so Claude sees a task added since
+// it last read the list. Titles only, and a few: every answer carries it.
+async function describeOpen($: Engine, listId: string): Promise<string> {
+  const list = (await read($, lists)).find(one => one.id === listId)
+  if (!list) return ''
+  const open = live(list).filter(task => !task.isDone)
+  if (open.length === 0) return ` Nothing is left open in L${list.number}.`
+  const titles = open
+    .slice(0, MAX_OPEN_TOLD)
+    .map(task => `${taskLabel(list, task)} ${task.title}`)
+    .join('; ')
+  const more = open.length > MAX_OPEN_TOLD ? `; and ${open.length - MAX_OPEN_TOLD} more` : ''
+
+  return (
+    ` Still open in L${list.number}: ${titles}${more}. ` +
+    'If the work you just did also settled one of these, tick it too; leave the rest.'
+  )
+}
+
 // Ticks a task done or reopens it; `isDone` left out flips it. A task ticked
 // done folds its finding and fix away.
 async function setDone($: Engine, listId: string, taskId: string, isDone?: boolean) {
@@ -718,6 +789,7 @@ async function showList($: Engine, id: string) {
   await update($, menu, () => '')
   await update($, purging, () => '')
   await update($, isSettings, () => false)
+  await update($, confirmingSend, () => false)
   await update($, openId, () => id)
 }
 
@@ -912,6 +984,13 @@ async function activate($: Engine, element: string): Promise<boolean> {
   else if (kind === 'purge') await update($, purging, () => id)
   else if (kind === 'purgeno') await update($, purging, () => '')
   else if (kind === 'usage') await showUsage($, id)
+  else if (kind === 'autodetect') await toggleAutoDetect($)
+  // Turning it off needs no asking; turning it on only opens the warning,
+  // whose own "Turn on" button, left out of here, does it.
+  else if (kind === 'alwayssend') {
+    if (await read($, alwaysSend)) await setAlwaysSend($, false)
+    else await update($, confirmingSend, held => !held)
+  } else if (kind === 'sendno') await update($, confirmingSend, () => false)
   else if (kind === 'settings') await update($, isSettings, () => true)
   else if (kind === 'closeusage') await $.ui.close({ id: USAGE_PANE })
   else return false
@@ -929,6 +1008,12 @@ export const register: Register = on => {
     await addTotals($, {})
     const named = await $.store.get(LABELS_KEY)
     if (named && typeof named === 'object') await update($, labels, () => named as Labels)
+    // On unless the person turned it off.
+    const isAuto = (await $.store.get(AUTO_DETECT_KEY)) !== false
+    await update($, autoDetect, () => isAuto)
+    // Off unless the person turned it on.
+    const isAlways = (await $.store.get(ALWAYS_SEND_KEY)) === true
+    await update($, alwaysSend, () => isAlways)
     const root = await $.session.root()
     await update($, projectRoot, () => root)
     await adoptOldLists($, root)
@@ -1010,7 +1095,9 @@ export const register: Register = on => {
     await setNote($, list.id, task.id, e.note)
 
     return {
-      result: `${taskLabel(list, task)} "${task.title}" is now ${isDeleted ? 'in the Deleted section' : 'restored'}.`,
+      result:
+        `${taskLabel(list, task)} "${task.title}" is now ${isDeleted ? 'in the Deleted section' : 'restored'}.` +
+        (await describeOpen($, list.id)),
     }
   })
 
@@ -1087,7 +1174,11 @@ export const register: Register = on => {
     await setDone($, list.id, task.id, isDone)
     await setNote($, list.id, task.id, e.note)
 
-    return { result: `${taskLabel(list, task)} "${task.title}" is now ${isDone ? 'done' : 'open'}.` }
+    return {
+      result:
+        `${taskLabel(list, task)} "${task.title}" is now ${isDone ? 'done' : 'open'}.` +
+        (await describeOpen($, list.id)),
+    }
   })
 
   // "work through #L3", "fix B2": the model gets every task of list 3, or
@@ -1108,9 +1199,13 @@ export const register: Register = on => {
         match => `${Number(match[1])}-${Number(match[2])}`,
       ),
     ])
-    if (wholeLists.size === 0 && exact.size === 0) return next(e)
+    const isAlways = await read($, alwaysSend)
+    if (wholeLists.size === 0 && exact.size === 0 && !isAlways) return next(e)
 
     const all = await refresh($)
+    const root = await read($, projectRoot)
+    // Turned on in Settings: the project's open tasks ride every prompt.
+    const standing = isAlways ? describeStanding(all.filter(list => isInProject(list, root))) : ''
 
     // The characters each list named in the prompt adds to it, by list id.
     const added = new Map<string, number>()
@@ -1126,9 +1221,9 @@ export const register: Register = on => {
 
       return texts
     })
-    if (found.length === 0) return next(e)
+    if (found.length === 0 && standing === '') return next(e)
 
-    const note =
+    const note = found.length === 0 ? '' :
       `The user's AutoTask pane (the AutoTask mod) holds numbered task lists (#L3) whose tasks are labelled by the list's letter and their own number (C2 is task 2 of L3). ` +
       `The prompt's references match these, which is most likely what they refer to. ` +
       `Once you have finished and verified a task the user asked you to do, tick it with the mcp__autotask__set_task_done tool; ` +
@@ -1137,18 +1232,23 @@ export const register: Register = on => {
       `A follow-up you come across that belongs on one of these lists and is not on it is offered to the user with mcp__autotask__add_task.\n\n` +
       found.join('\n\n')
 
-    await change($, held =>
-      held.map(list => {
-        const chars = added.get(list.id)
+    if (added.size > 0) {
+      await change($, held =>
+        held.map(list => {
+          const chars = added.get(list.id)
 
-        return chars === undefined
-          ? list
-          : { ...list, usage: addUsage(list.usage, { mentions: 1, contextTokens: toTokens(chars) }) }
-      }),
-    )
-    await addTotals($, { mentions: 1, contextTokens: toTokens(note.length) })
+          return chars === undefined
+            ? list
+            : { ...list, usage: addUsage(list.usage, { mentions: 1, contextTokens: toTokens(chars) }) }
+        }),
+      )
+    }
+    await addTotals($, {
+      mentions: found.length > 0 ? 1 : 0,
+      contextTokens: toTokens(standing.length + note.length),
+    })
 
-    return next({ ...e, context: [...(e.context ?? []), note] })
+    return next({ ...e, context: [...(e.context ?? []), ...[standing, note].filter(text => text !== '')] })
   })
 
   on('command.run', { command: 'autotask' }, async ($, e) => {
@@ -1181,6 +1281,8 @@ export const register: Register = on => {
     const answer = e.answer
     // Kept for "Add to list", which reads it whatever the checks below say.
     await update($, lastAnswer, () => answer)
+    // Turned off in Settings: nothing is read unasked, and nothing is spent.
+    if (!(await read($, autoDetect))) return done
     if (countListLines(answer) < MIN_LIST_LINES || !TASK_CUES.test(answer)) return done
 
     // Off a timer, not awaited: the turn ends now and the offer follows.
@@ -1430,6 +1532,9 @@ export const register: Register = on => {
     const editingId = await read($, editing)
     const menuId = await read($, menu)
     const names = await read($, labels)
+    const isAuto = await read($, autoDetect)
+    const isAlways = await read($, alwaysSend)
+    const isConfirmingSend = await read($, confirmingSend)
     const purgingId = await read($, purging)
 
     const Svg ='Svg' in ui ? ui.Svg : undefined
@@ -1468,14 +1573,80 @@ export const register: Register = on => {
       )
     }
 
-    // The settings page, for the whole mod: what each priority is called.
+    // The settings page, for the whole mod.
     if (await read($, isSettings)) {
+      // What sending the open tasks with every prompt costs, as things stand.
+      const standingTokens = toTokens(describeStanding(all.filter(one => isInProject(one, root))).length)
+
       return (
         <Box flexDirection="column" gap={1}>
           <Box flexDirection="row">
             <Button key="back-settings" plain dimColor label="‹ All lists" onPress={() => showList($, '')} />
           </Box>
           <Text bold>Settings</Text>
+          {/* Each setting in a quiet card of its own, as the lists are. */}
+          <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
+            <Box flexDirection="row" gap={2} alignItems="center">
+              <Text bold>Find tasks automatically</Text>
+              <Button
+                key="autodetect"
+                variant={isAuto ? 'primary' : 'secondary'}
+                label={isAuto ? 'On' : 'Off'}
+                onPress={() => toggleAutoDetect($)}
+              />
+            </Box>
+            <Text dimColor wrap="wrap">
+              {isAuto
+                ? 'On: when Claude answers with a list, AutoTask reads it and offers you the to-dos it finds. Each read is a small extra request to Claude that counts toward your usage.'
+                : 'Off: AutoTask reads nothing by itself and uses nothing extra. When you want an answer turned into tasks, press “+ Add to list” above the prompt.'}
+            </Text>
+          </Box>
+          <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
+            <Box flexDirection="row" gap={2} alignItems="center">
+              <Text bold>Send my open tasks with every message</Text>
+              <Button
+                key="alwayssend"
+                variant={isAlways ? 'primary' : 'secondary'}
+                label={isAlways ? 'On' : 'Off'}
+                onPress={() =>
+                  isAlways ? setAlwaysSend($, false) : update($, confirmingSend, held => !held)
+                }
+              />
+            </Box>
+            <Text dimColor wrap="wrap">
+              {isAlways
+                ? `On: every message you send carries this project's open tasks, so Claude always knows your list. Right now that adds about ${grouped(standingTokens)} tokens to each message.`
+                : 'Off: Claude sees a task only when you name it, like “fix B3” or “work through #L3”. This is the cheaper way, and how AutoTask is meant to be used.'}
+            </Text>
+            {isConfirmingSend && !isAlways && (
+              <Box flexDirection="column" borderStyle="round" borderColor={SEVERITY_COLOR.high} paddingX={1} marginTop={1}>
+                <Text bold color={SEVERITY_COLOR.high}>
+                  Before you turn this on
+                </Text>
+                <Text wrap="wrap">
+                  • Every message gets bigger. Your open tasks are added to each one you send, whether or not the
+                  message is about them. Right now that is about {grouped(standingTokens)} tokens a message for this
+                  project, and it grows as your lists grow.
+                </Text>
+                <Text wrap="wrap">
+                  • It uses up your usage faster. Those extra tokens are counted every single time, so a long chat
+                  pays for the list over and over.
+                </Text>
+                <Text wrap="wrap">
+                  • Claude may bring up your tasks when you did not ask. It is told they are only background, but it
+                  can still be distracted by them.
+                </Text>
+                <Text wrap="wrap">
+                  • Only task titles are sent, not their details. Name a task to give Claude the rest.
+                </Text>
+                <Box flexDirection="row" gap={2} marginTop={1}>
+                  <Button key="sendyes" variant="primary" label="Turn on anyway" onPress={() => setAlwaysSend($, true)} />
+                  <Button key="sendno" label="Keep it off" onPress={() => update($, confirmingSend, () => false)} />
+                </Box>
+              </Box>
+            )}
+          </Box>
+          <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1} gap={1}>
           <Box flexDirection="column">
             <Text bold>Priority names</Text>
             <Text dimColor wrap="wrap">
@@ -1510,6 +1681,7 @@ export const register: Register = on => {
               label="Reset all names"
               onPress={() => update($, labels, () => ({})).then(() => $.store.delete(LABELS_KEY))}
             />
+          </Box>
           </Box>
         </Box>
       )
@@ -1603,7 +1775,8 @@ export const register: Register = on => {
           {Input && (
             <Box marginTop={1} paddingBottom={1}>
               <Input
-                key="new-list"
+                // A new key with every list made, so the field empties.
+                key={`new-list-${all.length}`}
                 label="New list"
                 placeholder="name"
                 value=""
@@ -1692,6 +1865,9 @@ export const register: Register = on => {
     // One task: a chevron that opens its finding and fix beneath it, the
     // check, the title, and a remove control that shows while the pointer is
     // on the row. Its section already says how severe it is.
+    // The chevron's column, in cells: a button is one cell wide on the
+    // terminal and wider than its glyph everywhere else.
+    const chevronColumn = e.surface === 'terminal' ? 1 : 3
     const row = (task: Task) => {
       const isShown = shown.includes(task.id)
       const isEdited = editingId === task.id
@@ -1699,17 +1875,21 @@ export const register: Register = on => {
       return (
         <Box key={`row-${task.id}`} flexDirection="column">
           <Box flexDirection="row" gap={1}>
-            {hasDetail(task) ? (
-              <Button
-                key={`expand-${task.id}`}
-                plain
-                dimColor
-                label={isShown ? '▾' : '▸'}
-                onPress={() => toggleExpanded($, task.id)}
-              />
-            ) : (
-              <Text> </Text>
-            )}
+            {/* One column for the chevron, there or not, so a row with
+                nothing to open lines up with the rows that have one. */}
+            <Box width={chevronColumn} flexShrink={0}>
+              {hasDetail(task) ? (
+                <Button
+                  key={`expand-${task.id}`}
+                  plain
+                  dimColor
+                  label={isShown ? '▾' : '▸'}
+                  onPress={() => toggleExpanded($, task.id)}
+                />
+              ) : (
+                <Text>{' '}</Text>
+              )}
+            </Box>
             <Button
               key={`toggle-${task.id}`}
               plain
@@ -1914,7 +2094,9 @@ export const register: Register = on => {
         {Input && (
           <Box marginTop={1}>
             <Input
-              key="new-task"
+              // A new key with every task added: the field is drawn afresh,
+              // empty, where the same one would keep what was typed.
+              key={`new-task-${nextTaskNumber(list)}`}
               label="Add task"
               placeholder="what needs doing"
               value=""

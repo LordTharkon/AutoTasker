@@ -24,7 +24,7 @@ To try it without installing, clone the repository and start Claude Code with `c
 - **"+ Add to list".** A small button above the prompt reads Claude's last answer on request, for answers the mod did not offer by itself.
 - **A pane of lists.** `/autotask`, or the "☑ AutoTask" button above the prompt, opens the pane. Each list groups its open tasks by priority, with Done and Deleted sections. A task can be ticked, edited, given a priority, moved to another list, deleted and restored.
 - **Per project.** Lists belong to the project folder they were made in. "Show all projects" lists every project's.
-- **Settings.** Rename the five priorities (Critical, High, Medium, Low, Info) to whatever you like.
+- **Settings.** Turn automatic detection off, so answers are read only when you press "+ Add to list". Rename the five priorities (Critical, High, Medium, Low, Info) to whatever you like. Optionally send your open tasks with every message; this is off by default and costs tokens on each message.
 - **Usage.** The gear on a list shows what the list and the mod have cost in tokens.
 
 ## Commands

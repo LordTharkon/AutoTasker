@@ -114,6 +114,18 @@ declare module 'claude-code' {
       isSettings: boolean
       /** Whether the offer above the prompt lists every task, not its first few. */
       offerOpen: boolean
+      /**
+       * Whether answers are read for tasks unasked, which costs a Haiku call
+       * each; off, only "Add to list" reads one.
+       */
+      autoDetect: boolean
+      /**
+       * Whether the project's open tasks are added to every prompt, not only
+       * to one that names a task; off unless the person turned it on.
+       */
+      alwaysSend: boolean
+      /** Whether Settings shows the warning asked before `alwaysSend` goes on. */
+      confirmingSend: boolean
       /** The session's project root, absolute; `""` until the session starts. */
       projectRoot: string
       /** The id of the deleted task being asked about removing for good; `""` for none. */
