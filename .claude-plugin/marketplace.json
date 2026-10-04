@@ -1,0 +1,14 @@
+{
+  "name": "levorlabs",
+  "description": "Claude Code mods by LevorLabs",
+  "owner": {
+    "name": "LevorLabs"
+  },
+  "plugins": [
+    {
+      "name": "autotask",
+      "source": "./autotask",
+      "description": "Turns the lists Claude outputs (audit findings, action items) into named task lists you can check off in a pane"
+    }
+  ]
+}
