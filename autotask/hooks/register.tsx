@@ -32,8 +32,8 @@ const MAX_EXISTING_LISTS = 6
 const MAX_EXISTING_TASKS = 30
 // Two titles sharing this much of their words are the same task.
 const SAME_TITLE_SHARE = 0.5
-// The tasks of an offer listed above the prompt before "+ N more".
-const MAX_OFFER_ROWS = 12
+// The tasks of an offer listed above the prompt until "Show all" is pressed.
+const FOLDED_OFFER_ROWS = 5
 // An answer with none of these is not read for tasks: no model call is made.
 const TASK_CUES =
   /\b(severity|critical|high|medium|low|fix|issue|finding|recommend|todo|to-do|action items?|next steps?|vulnerab|risk|bug|problem|warning|missing|should|audit|review)/i
@@ -59,6 +59,7 @@ const usageOf = atom({ plugin: 'autotask', key: 'usageOf' } as const, '')
 const totals = atom({ plugin: 'autotask', key: 'totals' } as const, NO_USAGE)
 const labels = atom({ plugin: 'autotask', key: 'labels' } as const, {})
 const isSettings = atom({ plugin: 'autotask', key: 'isSettings' } as const, false)
+const offerOpen = atom({ plugin: 'autotask', key: 'offerOpen' } as const, false)
 const unpicked = atom({ plugin: 'autotask', key: 'unpicked' } as const, [])
 const lastAnswer = atom({ plugin: 'autotask', key: 'lastAnswer' } as const, '')
 const showAll = atom({ plugin: 'autotask', key: 'showAll' } as const, false)
@@ -585,7 +586,7 @@ function taskLabel(list: TaskList, task: Task): string {
 // first took it, by list and task number (`list: 2, task: 3`).
 function findTask(
   all: TaskList[],
-  input: { list?: unknown; task?: unknown },
+  input: { readonly [name: string]: unknown },
 ): { list: TaskList; task: Task } | undefined {
   const label = /^#?([A-Za-z]{1,2})(\d+)$/.exec(String(input.task ?? '').trim())
   const listNumber = label ? lettersNumber(label[1] ?? '') : Number(input.list)
@@ -659,6 +660,7 @@ async function setPending($: Engine, offer: Offer | null) {
   await update($, pending, () => offer)
   // Every offer starts with all its items ticked.
   await update($, unpicked, () => [])
+  await update($, offerOpen, () => false)
   const key = pendingKey(await read($, projectRoot))
   if (offer) await $.store.set(key, offer)
   else await $.store.delete(key)
@@ -1227,6 +1229,7 @@ export const register: Register = on => {
     const names = await read($, labels)
     const target = offer ? all.find(list => list.number === offer.mergeInto) : undefined
     const skipped = await read($, unpicked)
+    const isOfferOpen = await read($, offerOpen)
     const pickedCount = offer ? offer.tasks.filter(task => !skipped.includes(task.id)).length : 0
     const items = offer
       ? pickedCount === offer.tasks.length
@@ -1234,42 +1237,8 @@ export const register: Register = on => {
         : `${pickedCount} of ${offer.tasks.length} items ticked`
       : ''
 
-    return (
-      <Box flexDirection="column">
-        {offer && (
-          // What would be added, worst first, so the choice is made seeing it.
-          <Box flexDirection="column" paddingLeft={2} paddingBottom={1}>
-            {[...offer.tasks]
-              .sort((a, b) => severityRank(a) - severityRank(b))
-              .slice(0, MAX_OFFER_ROWS)
-              .map(task => (
-                // A box to tick: an item unticked is left out of what is added.
-                <Box flexDirection="row" gap={1}>
-                  <Button
-                    key={`pick-${task.id}`}
-                    plain
-                    label={skipped.includes(task.id) ? '☐' : '☑'}
-                    onPress={() =>
-                      update($, unpicked, ids =>
-                        ids.includes(task.id) ? ids.filter(one => one !== task.id) : [...ids, task.id],
-                      )
-                    }
-                  />
-                  <Text wrap="truncate-end" dimColor={skipped.includes(task.id)}>
-                    <Text color={task.severity ? SEVERITY_COLOR[task.severity] : undefined} dimColor={!task.severity}>
-                      ●{' '}
-                    </Text>
-                    {task.title}
-                    {task.severity && <Text dimColor> · {labelOf(names, task.severity).toLowerCase()}</Text>}
-                  </Text>
-                </Box>
-              ))}
-            {offer.tasks.length > MAX_OFFER_ROWS && (
-              <Text dimColor>+ {offer.tasks.length - MAX_OFFER_ROWS} more, added with the ticked ones</Text>
-            )}
-          </Box>
-        )}
-        {offer && (
+    // The offer in a line, and what to do with it.
+    const offerButtons = offer && (
           <Box flexDirection="row" gap={2}>
             {offer.by === 'claude' ? (
               // Offered by Claude through its add_task tool, not read from an answer.
@@ -1303,6 +1272,58 @@ export const register: Register = on => {
               onPress={() => acceptPending($, true)}
             />
             <Button key="offer-dismiss" label="Dismiss" onPress={() => setPending($, null)} />
+          </Box>
+    )
+
+    return (
+      <Box flexDirection="column">
+        {offer && offerButtons}
+        {offer && (
+          // What would be added, worst first, so the choice is made seeing it.
+          // Under the buttons, and folded to a few rows until asked for: the
+          // band is cut off at the bottom when it grows past its room, and a
+          // long offer must not take the buttons with it.
+          <Box flexDirection="column" paddingLeft={2} paddingBottom={1}>
+            {[...offer.tasks]
+              .sort((a, b) => severityRank(a) - severityRank(b))
+              .slice(0, isOfferOpen ? offer.tasks.length : FOLDED_OFFER_ROWS)
+              .map(task => (
+                // A box to tick: an item unticked is left out of what is added.
+                <Box flexDirection="row" gap={1}>
+                  <Button
+                    key={`pick-${task.id}`}
+                    plain
+                    label={skipped.includes(task.id) ? '☐' : '☑'}
+                    onPress={() =>
+                      update($, unpicked, ids =>
+                        ids.includes(task.id) ? ids.filter(one => one !== task.id) : [...ids, task.id],
+                      )
+                    }
+                  />
+                  <Text wrap="truncate-end" dimColor={skipped.includes(task.id)}>
+                    <Text color={task.severity ? SEVERITY_COLOR[task.severity] : undefined} dimColor={!task.severity}>
+                      ●{' '}
+                    </Text>
+                    {task.title}
+                    {task.severity && <Text dimColor> · {labelOf(names, task.severity).toLowerCase()}</Text>}
+                  </Text>
+                </Box>
+              ))}
+            {offer.tasks.length > FOLDED_OFFER_ROWS && (
+              <Box flexDirection="row">
+                <Button
+                  key="offer-fold"
+                  plain
+                  dimColor
+                  label={
+                    isOfferOpen
+                      ? '▾ Show fewer'
+                      : `▸ Show all ${offer.tasks.length} (${offer.tasks.length - FOLDED_OFFER_ROWS} more, added unless unticked)`
+                  }
+                  onPress={() => update($, offerOpen, held => !held)}
+                />
+              </Box>
+            )}
           </Box>
         )}
         <Box flexDirection="row" gap={2}>

@@ -112,6 +112,8 @@ declare module 'claude-code' {
       labels: Partial<Record<Severity, string>>
       /** Whether the pane shows the settings page in place of the lists. */
       isSettings: boolean
+      /** Whether the offer above the prompt lists every task, not its first few. */
+      offerOpen: boolean
       /** The session's project root, absolute; `""` until the session starts. */
       projectRoot: string
       /** The id of the deleted task being asked about removing for good; `""` for none. */
