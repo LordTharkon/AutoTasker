@@ -52,7 +52,7 @@ The mod gives Claude three tools:
 | --- | --- |
 | `set_task_done` | Ticks a task done, or reopens it, with a short note on what was done |
 | `set_task_deleted` | Moves a task to its list's Deleted section, or restores it, with a note on why |
-| `add_task` | Offers you a follow-up it came across while working; you choose whether it is added |
+| `add_task` | Offers you a follow-up it came across while working; you choose whether it is added. A suggestion you dismiss is not made again, and Settings can turn suggestions off |
 
 Claude's notes show under the task as "Claude Notes".
 

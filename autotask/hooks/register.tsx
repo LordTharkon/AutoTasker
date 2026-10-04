@@ -44,7 +44,7 @@ const MAX_DETAIL_CHARS = 600
 // A second event on the same button this soon after the first is the same click.
 const ECHO_MS = 500
 // The buttons `activate` acts on, by the first word of their key.
-const EVERYDAY = ['open', 'back', 'toggle', 'expand', 'trash', 'scope', 'edit', 'cancel', 'save', 'menu', 'deleted', 'done', 'restore', 'remove', 'empty', 'purge', 'purgeno', 'usage', 'closeusage', 'settings', 'autodetect', 'alwayssend', 'sendno']
+const EVERYDAY = ['open', 'back', 'toggle', 'expand', 'trash', 'scope', 'edit', 'cancel', 'save', 'menu', 'deleted', 'done', 'restore', 'remove', 'empty', 'purge', 'purgeno', 'usage', 'closeusage', 'settings', 'autodetect', 'suggests', 'allow', 'alwayssend', 'sendno']
 
 const lists = atom({ plugin: 'autotask', key: 'lists' } as const, [])
 const openId = atom({ plugin: 'autotask', key: 'openId' } as const, '')
@@ -60,6 +60,8 @@ const totals = atom({ plugin: 'autotask', key: 'totals' } as const, NO_USAGE)
 const labels = atom({ plugin: 'autotask', key: 'labels' } as const, {})
 const isSettings = atom({ plugin: 'autotask', key: 'isSettings' } as const, false)
 const autoDetect = atom({ plugin: 'autotask', key: 'autoDetect' } as const, true)
+const dismissed = atom({ plugin: 'autotask', key: 'dismissed' } as const, [])
+const claudeSuggests = atom({ plugin: 'autotask', key: 'claudeSuggests' } as const, true)
 const alwaysSend = atom({ plugin: 'autotask', key: 'alwaysSend' } as const, false)
 const confirmingSend = atom({ plugin: 'autotask', key: 'confirmingSend' } as const, false)
 const offerOpen = atom({ plugin: 'autotask', key: 'offerOpen' } as const, false)
@@ -149,8 +151,10 @@ const DELETED_TOOL =
   'Never use it for a task that was completed (tick that one done instead), and never on your own judgement that a task is not worth doing.'
 const ADD_TOOL =
   "Offers the user a new task for one of the task lists in their AutoTask pane; they choose whether it is added. " +
-  'Call it when, while working on something else, you come across a concrete follow-up that belongs with a list the user keeps and is not on it: a bug you noticed, a step the work turned out to need, a risk worth a look. ' +
-  'One call per task. Never use it for the work you are doing now, for something you have already done, for vague ideas, or to restate a task a list already has.'
+  'Use it sparingly, and only for a list the user is working from in this conversation. Two cases call for it. ' +
+  'One: while working you come across a concrete follow-up that belongs on that list and is not on it, such as a bug you noticed, a step the work turned out to need, or a risk worth a look. ' +
+  'Two: something you left open for the user, such as a change they have yet to confirm or a decision they have yet to make, is still open the second time you would mention it. The first time, say it in your reply and offer nothing; most are settled in their next message. ' +
+  'One call per task, and never the same task twice. Never use it for the work you are doing now, for something already done, for vague ideas, or to restate a task a list already has.'
 // What the tools' descriptions add to every request, estimated.
 const TOOLS_TOKENS = Math.ceil(
   (DONE_TOOL.length + DELETED_TOOL.length + ADD_TOOL.length + 2 * NOTE_PARAM.description.length) /
@@ -163,6 +167,10 @@ const NO_LIST = 'no-list'
 const LABELS_KEY = 'labels'
 const AUTO_DETECT_KEY = 'autoDetect'
 const ALWAYS_SEND_KEY = 'alwaysSend'
+const SUGGESTS_KEY = 'claudeSuggests'
+const DISMISSED_KEY = 'dismissed'
+// The turned-down tasks of Claude's a project remembers.
+const MAX_DISMISSED = 200
 // The open tasks of one list sent with every prompt when that is turned on.
 const MAX_STANDING_TASKS = 30
 const MAX_LABEL_CHARS = 20
@@ -453,6 +461,56 @@ async function setAlwaysSend($: Engine, isOn: boolean) {
   await update($, confirmingSend, () => false)
   await update($, alwaysSend, () => isOn)
   await $.store.set(ALWAYS_SEND_KEY, isOn)
+}
+
+// Where the store keeps the tasks of Claude's the person turned down in the
+// project at `root`.
+function dismissedKey(root: string): string {
+  return `${DISMISSED_KEY}:${folderKey(root)}`
+}
+
+// The titles of the tasks Claude offered in this project and the person
+// turned down.
+async function readDismissed($: Engine, root: string): Promise<string[]> {
+  const held = await $.store.get(dismissedKey(root))
+
+  return Array.isArray(held) ? held.map(String) : []
+}
+
+// Remembers tasks of Claude's the person turned down, newest last, so the
+// add_task tool does not offer them again; the oldest are forgotten.
+async function rememberDismissed($: Engine, titles: string[]) {
+  if (titles.length === 0) return
+  const root = await read($, projectRoot)
+  const held = await readDismissed($, root)
+  const kept = [...held, ...titles].slice(-MAX_DISMISSED)
+  await $.store.set(dismissedKey(root), kept)
+  await update($, dismissed, () => kept)
+}
+
+// Lets Claude suggest a turned-down task again: the one at `index` in the
+// project's list of them, or with no index every one.
+async function forgetDismissed($: Engine, index?: number) {
+  const root = await read($, projectRoot)
+  const held = await readDismissed($, root)
+  const kept = index === undefined ? [] : held.filter((_title, at) => at !== index)
+  await $.store.set(dismissedKey(root), kept)
+  await update($, dismissed, () => kept)
+}
+
+// Takes the offer down unanswered. One of Claude's is remembered as turned
+// down; one read from an answer is not, so "Add to list" can bring it back.
+async function dismissPending($: Engine) {
+  const offer = await read($, pending)
+  if (offer?.by === 'claude') await rememberDismissed($, offer.tasks.map(task => task.title))
+  await setPending($, null)
+}
+
+// Turns Claude's own task suggestions on or off, for every project; the store
+// holds the choice across sessions.
+async function toggleSuggests($: Engine) {
+  await update($, claudeSuggests, held => !held)
+  await $.store.set(SUGGESTS_KEY, await read($, claudeSuggests))
 }
 
 // Turns reading answers for tasks unasked on or off, for every project; the
@@ -898,6 +956,13 @@ async function acceptPending($: Engine, asNew: boolean) {
 
     return
   }
+  // A task of Claude's left unticked was turned down as surely as a dismissed one.
+  if (offer.by === 'claude') {
+    await rememberDismissed(
+      $,
+      offer.tasks.filter(task => skipped.includes(task.id)).map(task => task.title),
+    )
+  }
   await setPending($, null)
   const { mergeInto, by: _by, ...list } = { ...offer, tasks: picked }
   const target = asNew ? undefined : (await read($, lists)).find(one => one.number === mergeInto)
@@ -985,6 +1050,8 @@ async function activate($: Engine, element: string): Promise<boolean> {
   else if (kind === 'purgeno') await update($, purging, () => '')
   else if (kind === 'usage') await showUsage($, id)
   else if (kind === 'autodetect') await toggleAutoDetect($)
+  else if (kind === 'suggests') await toggleSuggests($)
+  else if (kind === 'allow') await forgetDismissed($, Number(id))
   // Turning it off needs no asking; turning it on only opens the warning,
   // whose own "Turn on" button, left out of here, does it.
   else if (kind === 'alwayssend') {
@@ -1011,8 +1078,12 @@ export const register: Register = on => {
     // On unless the person turned it off.
     const isAuto = (await $.store.get(AUTO_DETECT_KEY)) !== false
     await update($, autoDetect, () => isAuto)
+    const isSuggesting = (await $.store.get(SUGGESTS_KEY)) !== false
+    await update($, claudeSuggests, () => isSuggesting)
+    const refused = await readDismissed($, await $.session.root())
+    await update($, dismissed, () => refused)
     // Off unless the person turned it on.
-    const isAlways = (await $.store.get(ALWAYS_SEND_KEY)) === true
+    const isAlways =(await $.store.get(ALWAYS_SEND_KEY)) === true
     await update($, alwaysSend, () => isAlways)
     const root = await $.session.root()
     await update($, projectRoot, () => root)
@@ -1107,7 +1178,18 @@ export const register: Register = on => {
   on('tool.call', { tool: 'mcp__autotask__add_task' }, async ($, e) => {
     const title = String(e.title ?? '').trim().slice(0, 120)
     if (title === '') return { deny: 'Give the task a title.' }
+    if (!(await read($, claudeSuggests))) {
+      return {
+        result:
+          'Not offered: the user turned off task suggestions from Claude in AutoTask\'s settings. Do not call this tool again in this conversation; mention the item in your reply instead.',
+      }
+    }
     const root = await read($, projectRoot)
+    // A task the person turned down once is not put to them again.
+    const refused = await readDismissed($, root)
+    if (refused.some(one => isSameTitle(one, title))) {
+      return { result: `Not offered: the user dismissed "${title}" when it was offered before. Do not offer it again.` }
+    }
     const all = (await refresh($)).filter(list => isInProject(list, root))
     const target = all.find(list => list.number === Number(String(e.list ?? '').replace(/\D/g, '')))
     const name = target?.name ?? (String(e.name ?? '').trim().slice(0, 60) || 'Follow-ups')
@@ -1373,7 +1455,7 @@ export const register: Register = on => {
               label={target ? 'New list' : 'Add to task list'}
               onPress={() => acceptPending($, true)}
             />
-            <Button key="offer-dismiss" label="Dismiss" onPress={() => setPending($, null)} />
+            <Button key="offer-dismiss" label="Dismiss" onPress={() => dismissPending($)} />
           </Box>
     )
 
@@ -1533,6 +1615,8 @@ export const register: Register = on => {
     const menuId = await read($, menu)
     const names = await read($, labels)
     const isAuto = await read($, autoDetect)
+    const isSuggesting = await read($, claudeSuggests)
+    const refusedTitles: string[] = await read($, dismissed)
     const isAlways = await read($, alwaysSend)
     const isConfirmingSend = await read($, confirmingSend)
     const purgingId = await read($, purging)
@@ -1600,6 +1684,51 @@ export const register: Register = on => {
                 ? 'On: when Claude answers with a list, AutoTask reads it and offers you the to-dos it finds. Each read is a small extra request to Claude that counts toward your usage.'
                 : 'Off: AutoTask reads nothing by itself and uses nothing extra. When you want an answer turned into tasks, press “+ Add to list” above the prompt.'}
             </Text>
+          </Box>
+          <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
+            <Box flexDirection="row" gap={2} alignItems="center">
+              <Text bold>Let Claude suggest tasks</Text>
+              <Button
+                key="suggests"
+                variant={isSuggesting ? 'primary' : 'secondary'}
+                label={isSuggesting ? 'On' : 'Off'}
+                onPress={() => toggleSuggests($)}
+              />
+            </Box>
+            <Text dimColor wrap="wrap">
+              {isSuggesting
+                ? 'On: when Claude spots a loose end while working on one of your lists, it can suggest it as a task. You choose whether it is added, and a suggestion you dismiss is not made again.'
+                : 'Off: Claude never suggests tasks. Tasks come only from the answers AutoTask reads and from what you add yourself.'}
+            </Text>
+            {/* The suggestions turned down in this project: the list that
+                stops Claude making them again, and the way to take one off it. */}
+            <Box flexDirection="column" marginTop={1}>
+              <Text bold>Suggestions you turned down · {refusedTitles.length}</Text>
+              <Text dimColor wrap="wrap">
+                {refusedTitles.length === 0
+                  ? 'None yet. When you dismiss a task Claude suggests, it is listed here and Claude will not suggest it again in this project.'
+                  : 'Claude will not suggest these again in this project. Press “Allow again” to take one off the list.'}
+              </Text>
+              {refusedTitles.map((title, index) => (
+                <Box key={`refused-${index}`} flexDirection="row" gap={2}>
+                  <Box flexGrow={1} flexShrink={1}>
+                    <Text wrap="wrap">• {title}</Text>
+                  </Box>
+                  <Button
+                    key={`allow-${index}`}
+                    plain
+                    dimColor
+                    label="Allow again"
+                    onPress={() => forgetDismissed($, index)}
+                  />
+                </Box>
+              ))}
+              {refusedTitles.length > 1 && (
+                <Box flexDirection="row" marginTop={1}>
+                  <Button key="allowall" label="Allow all again" onPress={() => forgetDismissed($)} />
+                </Box>
+              )}
+            </Box>
           </Box>
           <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
             <Box flexDirection="row" gap={2} alignItems="center">

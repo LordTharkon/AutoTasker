@@ -1,7 +1,7 @@
 {
   "name": "autotask",
   "displayName": "AutoTask",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Turns the lists Claude outputs (audit findings, action items) into named task lists you can check off in a pane",
   "author": { "name": "LevorLabs", "email": "contact@levorlabs.com", "url": "https://levorlabs.com" },
   "license": "MIT",

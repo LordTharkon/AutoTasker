@@ -126,6 +126,13 @@ declare module 'claude-code' {
       alwaysSend: boolean
       /** Whether Settings shows the warning asked before `alwaysSend` goes on. */
       confirmingSend: boolean
+      /**
+       * The titles of the tasks Claude offered in this project and the person
+       * turned down: add_task does not offer one again.
+       */
+      dismissed: string[]
+      /** Whether Claude may offer tasks of its own through add_task; on unless turned off. */
+      claudeSuggests: boolean
       /** The session's project root, absolute; `""` until the session starts. */
       projectRoot: string
       /** The id of the deleted task being asked about removing for good; `""` for none. */
