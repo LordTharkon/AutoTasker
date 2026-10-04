@@ -2,7 +2,8 @@
   "name": "levorlabs",
   "description": "Claude Code mods by LevorLabs",
   "owner": {
-    "name": "LevorLabs"
+    "name": "LevorLabs",
+    "email": "contact@levorlabs.com"
   },
   "plugins": [
     {

@@ -77,3 +77,7 @@ claude plugin validate ./autotask
 ```
 
 The source is one hooks module, `autotask/hooks/register.tsx`, and its type contract, `autotask/types/index.d.ts`. `/plugin-types` writes the Claude Code type definitions the `tsconfig.json` expects.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
